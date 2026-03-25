@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Game - WebSocket Version</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .app-container {
+            width: 1400px;
+            max-width: 100%;
+            background: rgba(26, 31, 46, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: rgba(0,0,0,0.3);
+            padding: 15px 25px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .header h1 {
+            color: #fff;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .status-badge {
+            font-size: 0.8rem;
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: #f57c00;
+            color: white;
+        }
+
+        .status-badge.connected {
+            background: #2e7d32;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 0;
+            min-height: 600px;
+        }
+
+        .room-panel {
+            background: rgba(0,0,0,0.3);
+            border-right: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .section {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .section-title {
+            color: #aaa;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        .input-field {
+            width: 100%;
+            padding: 10px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            color: white;
+            font-size: 0.9rem;
+            margin-top: 8px;
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 300px;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            font-size: 0.85rem;
+        }
+
+        .chat-message {
+            margin-bottom: 10px;
+            padding: 5px 10px;
+            border-radius: 8px;
+            animation: fadeIn 0.3s;
+        }
+
+        .chat-message.system {
+            color: #ffaa66;
+            text-align: center;
+            font-size: 0.75rem;
+        }
+
+        .chat-message.sent {
+            background: rgba(74,158,255,0.2);
+            border-left: 3px solid #4a9eff;
+        }
+
+        .chat-message.received {
+            background: rgba(255,106,106,0.2);
+            border-left: 3px solid #ff6a6a;
+        }
+
+        .chat-input-area {
+            display: flex;
+            gap: 10px;
+            padding: 15px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 8px 12px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 20px;
+            color: white;
+        }
+
+        .game-panel {
+            background: #1a1f2e;
+            position: relative;
+        }
+
+        .game-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            background: radial-gradient(circle at center, #2a2f3e 0%, #1a1f2e 100%);
+        }
+
+        .game-info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 15px;
+            border-radius: 10px;
+            color: white;
+            font-size: 0.8rem;
+            font-family: monospace;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="header">
+            <h1>
+                🎮 Multiplayer Game
+                <span id="connectionStatus" class="status-badge">⚡ Офлайн</span>
+                <span style="font-size: 0.7rem; margin-left: auto; color: #4caf50;" id="serverInfo">
+                    📡 WebSocket Server
+                </span>
+            </h1>
+        </div>
+        
+        <div class="main-grid">
+            <div class="room-panel">
+                <div class="section">
+                    <div class="section-title">🏠 КОМНАТА</div>
+                    <input type="text" id="roomIdInput" class="input-field" placeholder="ID комнаты">
+                    <button id="createRoomBtn" class="btn btn-success">🎮 Создать комнату</button>
+                    <button id="joinRoomBtn" class="btn">🔌 Подключиться к комнате</button>
+                    <button id="startGameBtn" class="btn btn-success" style="display: none;">▶️ СТАРТ ИГРЫ</button>
+                    <button id="disconnectBtn" class="btn btn-danger" style="display: none;">❌ Выйти</button>
+                </div>
+                
+                <div class="section" style="flex: 1; display: flex; flex-direction: column;">
+                    <div class="section-title">💬 ЧАТ</div>
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chatMessages">
+                            <div class="chat-message system">✨ Добро пожаловать!</div>
+                            <div class="chat-message system">🔌 Подключение через WebSocket сервер</div>
+                        </div>
+                        <div class="chat-input-area">
+                            <input type="text" id="chatInput" class="chat-input" placeholder="Введите сообщение..." disabled>
+                            <button id="sendChatBtn" class="btn" style="width: auto; padding: 8px 20px; margin: 0;" disabled>📤</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="game-panel">
+                <canvas id="gameCanvas" class="game-canvas" width="800" height="600"></canvas>
+                <div class="game-info" id="gameInfo">
+                    🎮 Игра не запущена
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== СОСТОЯНИЕ ==========
+        let ws = null;
+        let roomId = null;
+        let playerId = null;
+        let playerNumber = null;
+        let gameStarted = false;
+        let playerName = `Игрок_${Math.floor(Math.random() * 1000)}`;
+        
+        // Игроки
+        const players = {
+            local: {
+                x: 400,
+                y: 300,
+                radius: 20,
+                color: '#4a9eff',
+                name: playerName
+            },
+            remote: {
+                x: 400,
+                y: 300,
+                radius: 20,
+                color: '#ff6a6a',
+                name: 'Ожидание',
+                connected: false
+            }
+        };
+        
+        // Управление
+        const keys = { w: false, a: false, s: false, d: false };
+        const PLAYER_SPEED = 300;
+        
+        // DOM элементы
+        const connectionStatusSpan = document.getElementById('connectionStatus');
+        const roomIdInput = document.getElementById('roomIdInput');
+        const createRoomBtn = document.getElementById('createRoomBtn');
+        const joinRoomBtn = document.getElementById('joinRoomBtn');
+        const startGameBtn = document.getElementById('startGameBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const chatInput = document.getElementById('chatInput');
+        const sendChatBtn = document.getElementById('sendChatBtn');
+        const chatMessages = document.getElementById('chatMessages');
+        const gameCanvas = document.getElementById('gameCanvas');
+        const ctx = gameCanvas.getContext('2d');
+        const gameInfo = document.getElementById('gameInfo');
+        
+        // Определяем адрес сервера
+        const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'ws://localhost:8080'
+            : `ws://${window.location.host}`;
+        
+        function addChatMessage(text, type = 'system') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${type}`;
+            messageDiv.textContent = text;
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            while (chatMessages.children.length > 100) {
+                chatMessages.removeChild(chatMessages.firstChild);
+            }
+        }
+        
+        function updateUI() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                connectionStatusSpan.className = 'status-badge connected';
+                connectionStatusSpan.innerHTML = gameStarted ? '🎮 В игре' : '✅ Подключен';
+                gameInfo.innerHTML = gameStarted 
+                    ? `🎮 ИГРА АКТИВНА | ${players.local.name}: (${Math.round(players.local.x)}, ${Math.round(players.local.y)}) | ${players.remote.connected ? players.remote.name : 'ожидание'}`
+                    : `🔗 Комната: ${roomId || 'нет'} | Ожидайте старта`;
+                disconnectBtn.style.display = 'inline-block';
+                chatInput.disabled = false;
+                sendChatBtn.disabled = false;
+                
+                if (playerNumber === 1 && !gameStarted) {
+                    startGameBtn.style.display = 'inline-block';
+                } else {
+                    startGameBtn.style.display = 'none';
+                }
+            } else {
+                connectionStatusSpan.className = 'status-badge';
+                connectionStatusSpan.innerHTML = '⚡ Офлайн';
+                gameInfo.innerHTML = '🎮 Игра не запущена | Создайте или подключитесь к комнате';
+                disconnectBtn.style.display = 'none';
+                startGameBtn.style.display = 'none';
+                chatInput.disabled = true;
+                sendChatBtn.disabled = true;
+            }
+        }
+        
+        function connectToServer() {
+            ws = new WebSocket(SERVER_URL);
+            
+            ws.onopen = () => {
+                addChatMessage('✅ Подключено к серверу', 'system');
+                updateUI();
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Получено:', data);
+                
+                switch(data.type) {
+                    case 'roomCreated':
+                        roomId = data.roomId;
+                        playerId = data.playerId;
+                        playerNumber = 1;
+                        players.local.name = playerName;
+                        addChatMessage(`✅ Комната создана! ID: ${roomId}`, 'system');
+                        addChatMessage(`💡 Отправьте этот ID другу для подключения`, 'system');
+                        roomIdInput.value = roomId;
+                        updateUI();
+                        break;
+                        
+                    case 'joined':
+                        roomId = data.roomId;
+                        playerId = data.playerId;
+                        playerNumber = 2;
+                        players.local.name = playerName;
+                        players.remote.name = data.hostName;
+                        players.remote.connected = true;
+                        addChatMessage(`✅ Подключено к комнате ${roomId}`, 'system');
+                        addChatMessage(`🔴 Хост: ${data.hostName}`, 'system');
+                        updateUI();
+                        break;
+                        
+                    case 'playerJoined':
+                        players.remote.name = data.playerName;
+                        players.remote.connected = true;
+                        addChatMessage(`🔴 ${data.playerName} присоединился!`, 'system');
+                        updateUI();
+                        break;
+                        
+                    case 'gameStarted':
+                        gameStarted = true;
+                        addChatMessage(`🎮 ИГРА НАЧАЛАСЬ! Управляйте WASD`, 'system');
+                        updateUI();
+                        break;
+                        
+                    case 'playerMove':
+                        if (data.playerId !== playerId) {
+                            players.remote.x = data.x;
+                            players.remote.y = data.y;
+                        }
+                        break;
+                        
+                    case 'chat':
+                        addChatMessage(`${data.sender}: ${data.message}`, data.sender === playerName ? 'sent' : 'received');
+                        break;
+                        
+                    case 'hostDisconnected':
+                    case 'guestDisconnected':
+                        addChatMessage(`❌ ${data.message}`, 'system');
+                        disconnect();
+                        break;
+                        
+                    case 'error':
+                        addChatMessage(`❌ ${data.message}`, 'system');
+                        break;
+                }
+            };
+            
+            ws.onclose = () => {
+                addChatMessage('❌ Соединение с сервером потеряно', 'system');
+                disconnect();
+            };
+            
+            ws.onerror = (err) => {
+                addChatMessage(`❌ Ошибка: ${err.message}`, 'system');
+            };
+        }
+        
+        function sendToServer(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            }
+        }
+        
+        function createRoom() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                sendToServer({
+                    type: 'createRoom',
+                    name: playerName
+                });
+            } else {
+                connectToServer();
+                setTimeout(() => createRoom(), 500);
+            }
+        }
+        
+        function joinRoom() {
+            const id = roomIdInput.value.trim();
+            if (!id) {
+                addChatMessage('❌ Введите ID комнаты', 'system');
+                return;
+            }
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                connectToServer();
+                setTimeout(() => joinRoom(), 500);
+            } else {
+                sendToServer({
+                    type: 'joinRoom',
+                    roomId: id,
+                    name: playerName
+                });
+            }
+        }
+        
+        function startGame() {
+            if (playerNumber === 1 && !gameStarted) {
+                sendToServer({ type: 'startGame' });
+                addChatMessage('🎮 Запуск игры...', 'system');
+            }
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            roomId = null;
+            playerId = null;
+            playerNumber = null;
+            gameStarted = false;
+            players.remote.connected = false;
+            players.local.x = 400;
+            players.local.y = 300;
+            players.remote.x = 400;
+            players.remote.y = 300;
+            updateUI();
+        }
+        
+        function updatePlayerMovement(deltaTime) {
+            let moveX = 0, moveY = 0;
+            if (keys.w) moveY -= 1;
+            if (keys.s) moveY += 1;
+            if (keys.a) moveX -= 1;
+            if (keys.d) moveX += 1;
+            
+            if (moveX !== 0 || moveY !== 0) {
+                const len = Math.hypot(moveX, moveY);
+                moveX /= len;
+                moveY /= len;
+            }
+            
+            let newX = players.local.x + moveX * PLAYER_SPEED * deltaTime;
+            let newY = players.local.y + moveY * PLAYER_SPEED * deltaTime;
+            newX = Math.min(Math.max(newX, players.local.radius), gameCanvas.width - players.local.radius);
+            newY = Math.min(Math.max(newY, players.local.radius), gameCanvas.height - players.local.radius);
+            
+            if ((newX !== players.local.x || newY !== players.local.y) && gameStarted) {
+                players.local.x = newX;
+                players.local.y = newY;
+                sendToServer({
+                    type: 'playerMove',
+                    playerId: playerId,
+                    x: players.local.x,
+                    y: players.local.y
+                });
+            } else {
+                players.local.x = newX;
+                players.local.y = newY;
+            }
+        }
+        
+        function draw() {
+            ctx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+            
+            ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < gameCanvas.width; i += 50) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, gameCanvas.height);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(gameCanvas.width, i);
+                ctx.stroke();
+            }
+            
+            // Удаленный игрок
+            if (players.remote.connected && gameStarted) {
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = players.remote.color;
+                ctx.beginPath();
+                ctx.arc(players.remote.x, players.remote.y, players.remote.radius, 0, Math.PI * 2);
+                ctx.fillStyle = players.remote.color;
+                ctx.fill();
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 12px Arial';
+                ctx.shadowBlur = 0;
+                ctx.fillText(players.remote.name, players.remote.x - 25, players.remote.y - 15);
+            } else if (players.remote.connected) {
+                ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(players.remote.x, players.remote.y, players.remote.radius, 0, Math.PI * 2);
+                ctx.fillStyle = players.remote.color;
+                ctx.fill();
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 12px Arial';
+                ctx.fillText(players.remote.name + ' (ожидание)', players.remote.x - 40, players.remote.y - 15);
+                ctx.globalAlpha = 1;
+            }
+            
+            // Локальный игрок
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = players.local.color;
+            ctx.beginPath();
+            ctx.arc(players.local.x, players.local.y, players.local.radius, 0, Math.PI * 2);
+            ctx.fillStyle = players.local.color;
+            ctx.fill();
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 12px Arial';
+            ctx.shadowBlur = 0;
+            ctx.fillText(players.local.name, players.local.x - 25, players.local.y - 15);
+            
+            ctx.beginPath();
+            ctx.arc(players.local.x, players.local.y, players.local.radius + 3, 0, Math.PI * 2);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        
+        function sendChatMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addChatMessage('❌ Нет подключения к серверу', 'system');
+                return;
+            }
+            sendToServer({
+                type: 'chat',
+                message: text,
+                sender: playerName
+            });
+            addChatMessage(`${playerName}: ${text}`, 'sent');
+            chatInput.value = '';
+        }
+        
+        let lastTime = performance.now() / 1000;
+        
+        function gameLoop(nowMs) {
+            const nowSec = nowMs / 1000;
+            let delta = Math.min(0.033, nowSec - lastTime);
+            if (delta > 0) {
+                if (gameStarted) {
+                    updatePlayerMovement(delta);
+                }
+                draw();
+            }
+            lastTime = nowSec;
+            requestAnimationFrame(gameLoop);
+        }
+        
+        function setupControls() {
+            window.addEventListener('keydown', (e) => {
+                const key = e.key.toLowerCase();
+                if (key === 'w') keys.w = true;
+                if (key === 'a') keys.a = true;
+                if (key === 's') keys.s = true;
+                if (key === 'd') keys.d = true;
+                if (['w','a','s','d'].includes(key)) e.preventDefault();
+            });
+            window.addEventListener('keyup', (e) => {
+                const key = e.key.toLowerCase();
+                if (key === 'w') keys.w = false;
+                if (key === 'a') keys.a = false;
+                if (key === 's') keys.s = false;
+                if (key === 'd') keys.d = false;
+            });
+        }
+        
+        createRoomBtn.onclick = createRoom;
+        joinRoomBtn.onclick = joinRoom;
+        startGameBtn.onclick = startGame;
+        disconnectBtn.onclick = disconnect;
+        sendChatBtn.onclick = sendChatMessage;
+        chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendChatMessage(); };
+        
+        setupControls();
+        gameLoop(performance.now());
+        addChatMessage('📡 WebSocket версия - гарантированно работает между любыми компьютерами!', 'system');
+    </script>
+</body>
+</html>
