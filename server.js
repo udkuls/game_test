@@ -322,12 +322,20 @@ class GameRoom {
             let hit = false;
             
             if (p.isEnemy) {
+                // Враждебный снаряд - проверяем попадание в игроков
                 [this.players.host, this.players.guest].forEach(player => {
                     if (player && player.hp > 0 && !hit) {
+                        // Уменьшаем таймер неуязвимости
+                        if (player.invincibleTimer > 0) {
+                            player.invincibleTimer -= deltaTime;
+                        }
+                        
                         if (Math.hypot(p.x - player.x, p.y - player.y) < p.radius + player.radius) {
                             if (player.invincibleTimer <= 0) {
                                 player.hp = Math.max(0, player.hp - p.damage);
                                 player.invincibleTimer = GAME_CONFIG.INVINCIBLE_TIME;
+                                
+                                console.log(`💔 ${player.name} получил урон от снаряда! HP: ${player.hp}`);
                                 
                                 this.broadcast({
                                     type: 'playerHurt',
@@ -349,6 +357,7 @@ class GameRoom {
                     }
                 });
             } else {
+                // Дружественный снаряд - проверяем попадание во врагов
                 for (let j = 0; j < this.enemies.length; j++) {
                     const e = this.enemies[j];
                     if (e.hp <= 0) continue;
@@ -403,13 +412,18 @@ class GameRoom {
                     enemy.y += (dy / dist) * move;
                 }
                 
+                // Уменьшаем таймер неуязвимости
+                if (closestPlayer.invincibleTimer > 0) {
+                    closestPlayer.invincibleTimer -= deltaTime;
+                }
+                
                 const distToPlayer = Math.hypot(closestPlayer.x - enemy.x, closestPlayer.y - enemy.y);
                 if (distToPlayer < closestPlayer.radius + enemy.radius) {
                     if (closestPlayer.invincibleTimer <= 0 && closestPlayer.hp > 0) {
                         closestPlayer.hp = Math.max(0, closestPlayer.hp - GAME_CONFIG.ENEMY_DAMAGE);
                         closestPlayer.invincibleTimer = GAME_CONFIG.INVINCIBLE_TIME;
                         
-                        console.log(`💔 ${closestPlayer.name} получил урон! HP: ${closestPlayer.hp}`);
+                        console.log(`💔 ${closestPlayer.name} получил урон от моба! HP: ${closestPlayer.hp}`);
                         
                         this.broadcast({
                             type: 'playerHurt',
@@ -440,12 +454,15 @@ class GameRoom {
             }
         }
         
+        // Проверка конца игры
         const bothDead = (this.players.host.hp <= 0 && (!this.players.guest || this.players.guest.hp <= 0));
         if (bothDead && this.gameStarted) {
             this.broadcast({ type: 'gameOver' });
             this.gameStarted = false;
+            console.log(`🏁 Игра окончена в комнате ${this.roomId}`);
         }
         
+        // Отправляем состояние игры
         this.broadcast({
             type: 'gameState',
             enemies: this.enemies,
