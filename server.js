@@ -37,11 +37,16 @@ const GAME_CONFIG = {
     EXP_PER_KILL: 10,
     SPAWN_DELAY: 0.8,
     PLAYER_SPEED: 320,
-    INVINCIBLE_TIME: 0.2,
+    INVINCIBLE_TIME: 0.6,
     ATTACK_COOLDOWN_BASE: 3.0,
+    START_PLAYER_DAMAGE: 5,
     LEVEL_UP_DAMAGE_BONUS: 2,
     LEVEL_UP_COOLDOWN_REDUCTION: 0.4,
-    MIN_ATTACK_COOLDOWN: 0.9
+    MIN_ATTACK_COOLDOWN: 0.9,
+    SHOOTER_ENEMY_RATIO: 0.3,
+    ENEMY_SHOOT_COOLDOWN: 2.0,
+    ENEMY_PROJECTILE_SPEED: 250,
+    ENEMY_PROJECTILE_DAMAGE: 8
 };
 
 // Класс для управления комнатой
@@ -68,7 +73,7 @@ class GameRoom {
                 radius: 18,
                 hp: 100,
                 maxHp: 100,
-                damage: 6,
+                damage: GAME_CONFIG.START_PLAYER_DAMAGE,
                 level: 1,
                 attackCooldown: GAME_CONFIG.ATTACK_COOLDOWN_BASE,
                 attackTimer: 0,
@@ -94,7 +99,7 @@ class GameRoom {
             radius: 18,
             hp: 100,
             maxHp: 100,
-            damage: 6,
+            damage: GAME_CONFIG.START_PLAYER_DAMAGE,
             level: 1,
             attackCooldown: GAME_CONFIG.ATTACK_COOLDOWN_BASE,
             attackTimer: 0,
@@ -148,7 +153,6 @@ class GameRoom {
         }
         
         if (leveledUp) {
-            // Увеличиваем урон и скорость атаки обоим игрокам
             const damageBonus = GAME_CONFIG.LEVEL_UP_DAMAGE_BONUS;
             const cooldownReduction = GAME_CONFIG.LEVEL_UP_COOLDOWN_REDUCTION;
             
@@ -192,13 +196,17 @@ class GameRoom {
         else if (side === 1) { x = 800 + padding; y = Math.random() * 600; }
         else { x = -padding; y = Math.random() * 600; }
         
+        const isShooter = Math.random() < GAME_CONFIG.SHOOTER_ENEMY_RATIO;
+        
         const enemy = {
             id: Math.random().toString(36).substring(2, 10) + Date.now(),
             x: x,
             y: y,
             hp: GAME_CONFIG.ENEMY_BASE_HP,
             maxHp: GAME_CONFIG.ENEMY_BASE_HP,
-            radius: GAME_CONFIG.ENEMY_RADIUS
+            radius: GAME_CONFIG.ENEMY_RADIUS,
+            isShooter: isShooter,
+            shootTimer: isShooter ? Math.random() * GAME_CONFIG.ENEMY_SHOOT_COOLDOWN : 0
         };
         
         this.enemies.push(enemy);
@@ -235,7 +243,8 @@ class GameRoom {
                                     vy: (dy / len) * GAME_CONFIG.PROJECTILE_SPEED,
                                     radius: GAME_CONFIG.PROJECTILE_RADIUS,
                                     damage: player.damage,
-                                    owner: player.id
+                                    owner: player.id,
+                                    isEnemy: false
                                 };
                                 this.projectiles.push(projectile);
                                 this.broadcast({ type: 'spawnProjectile', projectile: projectile });
@@ -248,6 +257,55 @@ class GameRoom {
                 }
             }
         });
+        
+        // Обновление атак стреляющих мобов
+        for (const enemy of this.enemies) {
+            if (enemy.hp <= 0) continue;
+            if (enemy.isShooter) {
+                enemy.shootTimer -= deltaTime;
+                if (enemy.shootTimer <= 0) {
+                    let closestPlayer = null;
+                    let minDist = Infinity;
+                    
+                    if (this.players.host.hp > 0) {
+                        const dist = Math.hypot(this.players.host.x - enemy.x, this.players.host.y - enemy.y);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            closestPlayer = this.players.host;
+                        }
+                    }
+                    if (this.players.guest && this.players.guest.hp > 0) {
+                        const dist = Math.hypot(this.players.guest.x - enemy.x, this.players.guest.y - enemy.y);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            closestPlayer = this.players.guest;
+                        }
+                    }
+                    
+                    if (closestPlayer && minDist < 400) {
+                        const dx = closestPlayer.x - enemy.x;
+                        const dy = closestPlayer.y - enemy.y;
+                        const len = Math.hypot(dx, dy);
+                        if (len > 0.01) {
+                            const projectile = {
+                                id: Math.random().toString(36).substring(2, 10),
+                                x: enemy.x,
+                                y: enemy.y,
+                                vx: (dx / len) * GAME_CONFIG.ENEMY_PROJECTILE_SPEED,
+                                vy: (dy / len) * GAME_CONFIG.ENEMY_PROJECTILE_SPEED,
+                                radius: GAME_CONFIG.PROJECTILE_RADIUS - 2,
+                                damage: GAME_CONFIG.ENEMY_PROJECTILE_DAMAGE,
+                                owner: enemy.id,
+                                isEnemy: true
+                            };
+                            this.projectiles.push(projectile);
+                            this.broadcast({ type: 'spawnProjectile', projectile: projectile });
+                        }
+                    }
+                    enemy.shootTimer = GAME_CONFIG.ENEMY_SHOOT_COOLDOWN;
+                }
+            }
+        }
         
         // Обновление снарядов
         for (let i = 0; i < this.projectiles.length; i++) {
@@ -262,31 +320,61 @@ class GameRoom {
             }
             
             let hit = false;
-            for (let j = 0; j < this.enemies.length; j++) {
-                const e = this.enemies[j];
-                if (e.hp <= 0) continue;
-                if (Math.hypot(p.x - e.x, p.y - e.y) < p.radius + e.radius) {
-                    e.hp -= p.damage;
-                    hit = true;
-                    if (e.hp <= 0) {
-                        this.updateSharedExp(GAME_CONFIG.EXP_PER_KILL);
-                        this.enemies.splice(j, 1);
-                        j--;
+            
+            if (p.isEnemy) {
+                [this.players.host, this.players.guest].forEach(player => {
+                    if (player && player.hp > 0 && !hit) {
+                        if (Math.hypot(p.x - player.x, p.y - player.y) < p.radius + player.radius) {
+                            if (player.invincibleTimer <= 0) {
+                                player.hp = Math.max(0, player.hp - p.damage);
+                                player.invincibleTimer = GAME_CONFIG.INVINCIBLE_TIME;
+                                
+                                this.broadcast({
+                                    type: 'playerHurt',
+                                    playerId: player.id,
+                                    hp: player.hp,
+                                    invincibleTimer: player.invincibleTimer
+                                });
+                                
+                                if (player.hp <= 0) {
+                                    this.broadcast({
+                                        type: 'playerDead',
+                                        playerId: player.id,
+                                        playerName: player.name
+                                    });
+                                }
+                            }
+                            hit = true;
+                        }
                     }
-                    break;
+                });
+            } else {
+                for (let j = 0; j < this.enemies.length; j++) {
+                    const e = this.enemies[j];
+                    if (e.hp <= 0) continue;
+                    if (Math.hypot(p.x - e.x, p.y - e.y) < p.radius + e.radius) {
+                        e.hp -= p.damage;
+                        hit = true;
+                        if (e.hp <= 0) {
+                            this.updateSharedExp(GAME_CONFIG.EXP_PER_KILL);
+                            this.enemies.splice(j, 1);
+                            j--;
+                        }
+                        break;
+                    }
                 }
             }
+            
             if (hit) {
                 this.projectiles.splice(i, 1);
                 i--;
             }
         }
         
-        // Обновление врагов
+        // Обновление врагов (движение к игрокам)
         for (const enemy of this.enemies) {
             if (enemy.hp <= 0) continue;
             
-            // Ищем ближайшего игрока
             let closestPlayer = null;
             let minDist = Infinity;
             
@@ -315,15 +403,8 @@ class GameRoom {
                     enemy.y += (dy / dist) * move;
                 }
                 
-                // Проверка коллизии с игроком
                 const distToPlayer = Math.hypot(closestPlayer.x - enemy.x, closestPlayer.y - enemy.y);
                 if (distToPlayer < closestPlayer.radius + enemy.radius) {
-                    // Уменьшаем таймер неуязвимости
-                    if (closestPlayer.invincibleTimer > 0) {
-                        closestPlayer.invincibleTimer -= deltaTime;
-                    }
-                    
-                    // Наносим урон только если нет неуязвимости
                     if (closestPlayer.invincibleTimer <= 0 && closestPlayer.hp > 0) {
                         closestPlayer.hp = Math.max(0, closestPlayer.hp - GAME_CONFIG.ENEMY_DAMAGE);
                         closestPlayer.invincibleTimer = GAME_CONFIG.INVINCIBLE_TIME;
@@ -333,32 +414,23 @@ class GameRoom {
                         this.broadcast({
                             type: 'playerHurt',
                             playerId: closestPlayer.id,
-                            hp: closestPlayer.hp
+                            hp: closestPlayer.hp,
+                            invincibleTimer: closestPlayer.invincibleTimer
                         });
                         
-                        // Проверка смерти
                         if (closestPlayer.hp <= 0) {
                             this.broadcast({
                                 type: 'playerDead',
                                 playerId: closestPlayer.id,
                                 playerName: closestPlayer.name
                             });
-                            
-                            // Если оба мертвы - игра окончена
-                            const bothDead = (this.players.host.hp <= 0 && (!this.players.guest || this.players.guest.hp <= 0));
-                            if (bothDead) {
-                                this.broadcast({ type: 'gameOver' });
-                                this.gameStarted = false;
-                            }
                         }
                     }
                     
-                    // Отталкивание врага
                     const angle = Math.atan2(enemy.y - closestPlayer.y, enemy.x - closestPlayer.x);
                     enemy.x += Math.cos(angle) * 25;
                     enemy.y += Math.sin(angle) * 25;
                     
-                    // Дополнительное отталкивание, чтобы не застревал
                     const newDist = Math.hypot(closestPlayer.x - enemy.x, closestPlayer.y - enemy.y);
                     if (newDist < closestPlayer.radius + enemy.radius) {
                         enemy.x = closestPlayer.x + Math.cos(angle) * (closestPlayer.radius + enemy.radius + 5);
@@ -368,7 +440,12 @@ class GameRoom {
             }
         }
         
-        // Отправляем состояние игры
+        const bothDead = (this.players.host.hp <= 0 && (!this.players.guest || this.players.guest.hp <= 0));
+        if (bothDead && this.gameStarted) {
+            this.broadcast({ type: 'gameOver' });
+            this.gameStarted = false;
+        }
+        
         this.broadcast({
             type: 'gameState',
             enemies: this.enemies,
@@ -452,7 +529,6 @@ wss.on('connection', (ws) => {
                         currentRoom.broadcast({ type: 'gameStarted' });
                         console.log(`🎮 Игра началась в комнате ${currentRoom.roomId}`);
                         
-                        // Запускаем игровой цикл
                         let lastTime = Date.now();
                         gameLoopInterval = setInterval(() => {
                             const now = Date.now();
@@ -472,6 +548,13 @@ wss.on('connection', (ws) => {
                             player.y = data.y;
                         }
                     }
+                    break;
+                    
+                case 'ping':
+                    ws.send(JSON.stringify({
+                        type: 'pong',
+                        timestamp: data.timestamp
+                    }));
                     break;
                     
                 case 'chat':
