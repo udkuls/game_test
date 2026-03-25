@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multiplayer Game - WebSocket Version</title>
+    <title>Multiplayer Survivors - Co-op Game</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            user-select: none;
         }
 
         body {
@@ -57,11 +58,15 @@
             background: #2e7d32;
         }
 
+        .status-badge.playing {
+            background: #4a9eff;
+        }
+
         .main-grid {
             display: grid;
-            grid-template-columns: 320px 1fr;
+            grid-template-columns: 300px 1fr;
             gap: 0;
-            min-height: 600px;
+            min-height: 700px;
         }
 
         .room-panel {
@@ -185,18 +190,45 @@
             height: 100%;
             display: block;
             background: radial-gradient(circle at center, #2a2f3e 0%, #1a1f2e 100%);
+            cursor: none;
         }
 
         .game-info {
             position: absolute;
             bottom: 20px;
             left: 20px;
-            background: rgba(0,0,0,0.7);
+            background: rgba(0,0,0,0.8);
             padding: 10px 15px;
             border-radius: 10px;
             color: white;
             font-size: 0.8rem;
             font-family: monospace;
+            pointer-events: none;
+        }
+
+        .exp-bar {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 250px;
+            background: rgba(0,0,0,0.8);
+            border-radius: 10px;
+            padding: 8px 12px;
+            pointer-events: none;
+        }
+
+        .exp-bar-fill {
+            height: 8px;
+            background: linear-gradient(90deg, #ffd966, #ffaa33);
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+
+        .exp-text {
+            color: white;
+            font-size: 0.7rem;
+            text-align: center;
+            margin-top: 4px;
         }
 
         @keyframes fadeIn {
@@ -215,10 +247,10 @@
     <div class="app-container">
         <div class="header">
             <h1>
-                🎮 Multiplayer Game
+                🎮 Multiplayer Survivors
                 <span id="connectionStatus" class="status-badge">⚡ Офлайн</span>
                 <span style="font-size: 0.7rem; margin-left: auto; color: #4caf50;" id="serverInfo">
-                    📡 WebSocket Server
+                    📡 Co-op Mode
                 </span>
             </h1>
         </div>
@@ -238,8 +270,8 @@
                     <div class="section-title">💬 ЧАТ</div>
                     <div class="chat-container">
                         <div class="chat-messages" id="chatMessages">
-                            <div class="chat-message system">✨ Добро пожаловать!</div>
-                            <div class="chat-message system">🔌 Подключение через WebSocket сервер</div>
+                            <div class="chat-message system">✨ Добро пожаловать в Co-op Survivors!</div>
+                            <div class="chat-message system">🤝 Опыт и уровень общие для обоих игроков</div>
                         </div>
                         <div class="chat-input-area">
                             <input type="text" id="chatInput" class="chat-input" placeholder="Введите сообщение..." disabled>
@@ -254,6 +286,10 @@
                 <div class="game-info" id="gameInfo">
                     🎮 Игра не запущена
                 </div>
+                <div class="exp-bar" id="expBar" style="display: none;">
+                    <div class="exp-bar-fill" id="expFill" style="width: 0%"></div>
+                    <div class="exp-text" id="expText">Уровень 1 | Опыт: 0/100</div>
+                </div>
             </div>
         </div>
     </div>
@@ -267,28 +303,49 @@
         let gameStarted = false;
         let playerName = `Игрок_${Math.floor(Math.random() * 1000)}`;
         
+        // Игровые объекты
+        let enemies = [];
+        let projectiles = [];
+        
         // Игроки
         const players = {
             local: {
                 x: 400,
                 y: 300,
-                radius: 20,
+                radius: 18,
+                hp: 100,
+                maxHp: 100,
+                damage: 2,
+                level: 1,
+                attackCooldown: 3.0,
                 color: '#4a9eff',
-                name: playerName
+                name: playerName,
+                invincibleTimer: 0
             },
             remote: {
                 x: 400,
                 y: 300,
-                radius: 20,
+                radius: 18,
+                hp: 100,
+                maxHp: 100,
+                damage: 2,
+                level: 1,
+                attackCooldown: 3.0,
                 color: '#ff6a6a',
                 name: 'Ожидание',
-                connected: false
+                connected: false,
+                invincibleTimer: 0
             }
         };
         
+        // Общий опыт
+        let sharedExp = 0;
+        let sharedExpNeeded = 100;
+        let sharedLevel = 1;
+        
         // Управление
         const keys = { w: false, a: false, s: false, d: false };
-        const PLAYER_SPEED = 300;
+        const PLAYER_SPEED = 320;
         
         // DOM элементы
         const connectionStatusSpan = document.getElementById('connectionStatus');
@@ -303,6 +360,9 @@
         const gameCanvas = document.getElementById('gameCanvas');
         const ctx = gameCanvas.getContext('2d');
         const gameInfo = document.getElementById('gameInfo');
+        const expBar = document.getElementById('expBar');
+        const expFill = document.getElementById('expFill');
+        const expText = document.getElementById('expText');
         
         // Определяем адрес сервера
         const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
@@ -322,10 +382,15 @@
         
         function updateUI() {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                connectionStatusSpan.className = 'status-badge connected';
-                connectionStatusSpan.innerHTML = gameStarted ? '🎮 В игре' : '✅ Подключен';
+                if (gameStarted) {
+                    connectionStatusSpan.className = 'status-badge playing';
+                    connectionStatusSpan.innerHTML = '🎮 В игре';
+                } else {
+                    connectionStatusSpan.className = 'status-badge connected';
+                    connectionStatusSpan.innerHTML = '✅ Подключен';
+                }
                 gameInfo.innerHTML = gameStarted 
-                    ? `🎮 ИГРА АКТИВНА | ${players.local.name}: (${Math.round(players.local.x)}, ${Math.round(players.local.y)}) | ${players.remote.connected ? players.remote.name : 'ожидание'}`
+                    ? `❤️ ${players.local.hp}/${players.local.maxHp} | ⚔️ ${players.local.damage} | ⏱️ ${players.local.attackCooldown.toFixed(1)}с`
                     : `🔗 Комната: ${roomId || 'нет'} | Ожидайте старта`;
                 disconnectBtn.style.display = 'inline-block';
                 chatInput.disabled = false;
@@ -336,6 +401,12 @@
                 } else {
                     startGameBtn.style.display = 'none';
                 }
+                
+                if (gameStarted) {
+                    expBar.style.display = 'block';
+                } else {
+                    expBar.style.display = 'none';
+                }
             } else {
                 connectionStatusSpan.className = 'status-badge';
                 connectionStatusSpan.innerHTML = '⚡ Офлайн';
@@ -344,7 +415,14 @@
                 startGameBtn.style.display = 'none';
                 chatInput.disabled = true;
                 sendChatBtn.disabled = true;
+                expBar.style.display = 'none';
             }
+        }
+        
+        function updateExpUI() {
+            const percent = (sharedExp / sharedExpNeeded) * 100;
+            expFill.style.width = `${percent}%`;
+            expText.textContent = `Уровень ${sharedLevel} | Опыт: ${Math.floor(sharedExp)}/${sharedExpNeeded}`;
         }
         
         function connectToServer() {
@@ -357,16 +435,13 @@
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                console.log('Получено:', data);
                 
                 switch(data.type) {
                     case 'roomCreated':
                         roomId = data.roomId;
                         playerId = data.playerId;
                         playerNumber = 1;
-                        players.local.name = playerName;
                         addChatMessage(`✅ Комната создана! ID: ${roomId}`, 'system');
-                        addChatMessage(`💡 Отправьте этот ID другу для подключения`, 'system');
                         roomIdInput.value = roomId;
                         updateUI();
                         break;
@@ -375,7 +450,6 @@
                         roomId = data.roomId;
                         playerId = data.playerId;
                         playerNumber = 2;
-                        players.local.name = playerName;
                         players.remote.name = data.hostName;
                         players.remote.connected = true;
                         addChatMessage(`✅ Подключено к комнате ${roomId}`, 'system');
@@ -393,14 +467,103 @@
                     case 'gameStarted':
                         gameStarted = true;
                         addChatMessage(`🎮 ИГРА НАЧАЛАСЬ! Управляйте WASD`, 'system');
+                        addChatMessage(`🤝 Опыт общий! Убивайте монстров вместе!`, 'system');
                         updateUI();
                         break;
                         
-                    case 'playerMove':
-                        if (data.playerId !== playerId) {
-                            players.remote.x = data.x;
-                            players.remote.y = data.y;
+                    case 'gameState':
+                        enemies = data.enemies;
+                        projectiles = data.projectiles;
+                        
+                        if (data.host) {
+                            if (playerNumber === 1) {
+                                players.local.hp = data.host.hp;
+                                players.local.x = data.host.x;
+                                players.local.y = data.host.y;
+                                players.local.damage = data.host.damage;
+                                players.local.attackCooldown = data.host.attackCooldown;
+                                
+                                if (data.guest && players.remote.connected) {
+                                    players.remote.hp = data.guest.hp;
+                                    players.remote.x = data.guest.x;
+                                    players.remote.y = data.guest.y;
+                                    players.remote.damage = data.guest.damage;
+                                    players.remote.attackCooldown = data.guest.attackCooldown;
+                                }
+                            } else {
+                                if (data.guest) {
+                                    players.local.hp = data.guest.hp;
+                                    players.local.x = data.guest.x;
+                                    players.local.y = data.guest.y;
+                                    players.local.damage = data.guest.damage;
+                                    players.local.attackCooldown = data.guest.attackCooldown;
+                                }
+                                players.remote.hp = data.host.hp;
+                                players.remote.x = data.host.x;
+                                players.remote.y = data.host.y;
+                                players.remote.damage = data.host.damage;
+                                players.remote.attackCooldown = data.host.attackCooldown;
+                                players.remote.connected = true;
+                            }
                         }
+                        break;
+                        
+                    case 'expUpdate':
+                        sharedExp = data.exp;
+                        sharedExpNeeded = data.expNeeded;
+                        sharedLevel = data.level;
+                        updateExpUI();
+                        break;
+                        
+                    case 'levelUp':
+                        sharedLevel = data.level;
+                        if (playerNumber === 1) {
+                            players.local.damage = data.hostDamage;
+                            players.local.attackCooldown = data.hostCooldown;
+                        } else {
+                            players.local.damage = data.guestDamage;
+                            players.local.attackCooldown = data.guestCooldown;
+                            players.remote.damage = data.hostDamage;
+                            players.remote.attackCooldown = data.hostCooldown;
+                        }
+                        addChatMessage(`✨ УРОВЕНЬ ${sharedLevel}! Урон +2, скорость атаки +0.4с`, 'system');
+                        updateExpUI();
+                        break;
+                        
+                    case 'playerHurt':
+                        if (data.playerId === playerId) {
+                            players.local.hp = data.hp;
+                            players.local.invincibleTimer = 0.6;
+                            if (gameStarted) {
+                                gameInfo.innerHTML = `❤️ ${players.local.hp}/${players.local.maxHp} | ⚔️ ${players.local.damage} | ⏱️ ${players.local.attackCooldown.toFixed(1)}с`;
+                            }
+                        } else {
+                            players.remote.hp = data.hp;
+                            players.remote.invincibleTimer = 0.6;
+                        }
+                        break;
+                        
+                    case 'playerDead':
+                        addChatMessage(`💀 ${data.playerName} погиб!`, 'system');
+                        if (data.playerId === playerId) {
+                            players.local.hp = 0;
+                        } else {
+                            players.remote.hp = 0;
+                        }
+                        break;
+                        
+                    case 'gameOver':
+                        addChatMessage(`💀 ИГРА ОКОНЧЕНА! Нажмите R для рестарта`, 'system');
+                        gameStarted = false;
+                        updateUI();
+                        break;
+                        
+                    case 'spawnEnemy':
+                        enemies.push(data.enemy);
+                        break;
+                        
+                    case 'spawnProjectile':
+                        projectiles.push(data.projectile);
                         break;
                         
                     case 'chat':
@@ -423,10 +586,6 @@
                 addChatMessage('❌ Соединение с сервером потеряно', 'system');
                 disconnect();
             };
-            
-            ws.onerror = (err) => {
-                addChatMessage(`❌ Ошибка: ${err.message}`, 'system');
-            };
         }
         
         function sendToServer(data) {
@@ -437,10 +596,7 @@
         
         function createRoom() {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                sendToServer({
-                    type: 'createRoom',
-                    name: playerName
-                });
+                sendToServer({ type: 'createRoom', name: playerName });
             } else {
                 connectToServer();
                 setTimeout(() => createRoom(), 500);
@@ -457,11 +613,7 @@
                 connectToServer();
                 setTimeout(() => joinRoom(), 500);
             } else {
-                sendToServer({
-                    type: 'joinRoom',
-                    roomId: id,
-                    name: playerName
-                });
+                sendToServer({ type: 'joinRoom', roomId: id, name: playerName });
             }
         }
         
@@ -482,11 +634,22 @@
             playerNumber = null;
             gameStarted = false;
             players.remote.connected = false;
-            players.local.x = 400;
-            players.local.y = 300;
-            players.remote.x = 400;
-            players.remote.y = 300;
+            players.local.invincibleTimer = 0;
+            players.remote.invincibleTimer = 0;
+            enemies = [];
+            projectiles = [];
             updateUI();
+        }
+        
+        function sendPlayerMove() {
+            if (gameStarted && ws && ws.readyState === WebSocket.OPEN && players.local.hp > 0) {
+                sendToServer({
+                    type: 'playerMove',
+                    playerId: playerId,
+                    x: players.local.x,
+                    y: players.local.y
+                });
+            }
         }
         
         function updatePlayerMovement(deltaTime) {
@@ -507,25 +670,18 @@
             newX = Math.min(Math.max(newX, players.local.radius), gameCanvas.width - players.local.radius);
             newY = Math.min(Math.max(newY, players.local.radius), gameCanvas.height - players.local.radius);
             
-            if ((newX !== players.local.x || newY !== players.local.y) && gameStarted) {
+            if (newX !== players.local.x || newY !== players.local.y) {
                 players.local.x = newX;
                 players.local.y = newY;
-                sendToServer({
-                    type: 'playerMove',
-                    playerId: playerId,
-                    x: players.local.x,
-                    y: players.local.y
-                });
-            } else {
-                players.local.x = newX;
-                players.local.y = newY;
+                sendPlayerMove();
             }
         }
         
         function draw() {
             ctx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
             
-            ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+            // Сетка
+            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
             ctx.lineWidth = 1;
             for (let i = 0; i < gameCanvas.width; i += 50) {
                 ctx.beginPath();
@@ -538,28 +694,78 @@
                 ctx.stroke();
             }
             
+            // Враги
+            for (const e of enemies) {
+                const healthPercent = e.hp / e.maxHp;
+                ctx.beginPath();
+                ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#7a2e4a';
+                ctx.fill();
+                ctx.strokeStyle = '#b66b6b';
+                ctx.stroke();
+                
+                // Полоска HP
+                const barWidth = e.radius * 1.6;
+                ctx.fillStyle = '#3a1a1a';
+                ctx.fillRect(e.x - barWidth/2, e.y - e.radius - 6, barWidth, 4);
+                ctx.fillStyle = '#e34d4d';
+                ctx.fillRect(e.x - barWidth/2, e.y - e.radius - 6, barWidth * healthPercent, 4);
+                
+                // Глаза
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(e.x - 5, e.y - 4, 2.5, 0, Math.PI * 2);
+                ctx.arc(e.x + 5, e.y - 4, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(e.x - 5 + Math.sin(Date.now() * 0.008) * 1, e.y - 5, 1, 0, Math.PI * 2);
+                ctx.arc(e.x + 5 + Math.sin(Date.now() * 0.008) * 1, e.y - 5, 1, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Снаряды
+            for (const p of projectiles) {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius - 2, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffdd77';
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius - 4, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffaa44';
+                ctx.fill();
+            }
+            
             // Удаленный игрок
-            if (players.remote.connected && gameStarted) {
+            if (players.remote.connected && players.remote.hp > 0 && gameStarted) {
                 ctx.shadowBlur = 10;
                 ctx.shadowColor = players.remote.color;
                 ctx.beginPath();
                 ctx.arc(players.remote.x, players.remote.y, players.remote.radius, 0, Math.PI * 2);
                 ctx.fillStyle = players.remote.color;
                 ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
                 ctx.fillStyle = 'white';
                 ctx.font = 'bold 12px Arial';
                 ctx.shadowBlur = 0;
-                ctx.fillText(players.remote.name, players.remote.x - 25, players.remote.y - 15);
-            } else if (players.remote.connected) {
-                ctx.globalAlpha = 0.5;
-                ctx.beginPath();
-                ctx.arc(players.remote.x, players.remote.y, players.remote.radius, 0, Math.PI * 2);
-                ctx.fillStyle = players.remote.color;
-                ctx.fill();
-                ctx.fillStyle = 'white';
-                ctx.font = 'bold 12px Arial';
-                ctx.fillText(players.remote.name + ' (ожидание)', players.remote.x - 40, players.remote.y - 15);
-                ctx.globalAlpha = 1;
+                ctx.fillText(players.remote.name, players.remote.x - 25, players.remote.y - 18);
+                ctx.fillStyle = '#ff6a6a';
+                ctx.fillText(`❤️ ${players.remote.hp}`, players.remote.x - 20, players.remote.y + 25);
+                
+                // Эффект неуязвимости для удаленного игрока
+                if (players.remote.invincibleTimer > 0) {
+                    if (Math.floor(Date.now() / 100) % 2 === 0) {
+                        ctx.beginPath();
+                        ctx.arc(players.remote.x, players.remote.y, players.remote.radius + 5, 0, Math.PI * 2);
+                        ctx.strokeStyle = '#ffaa66';
+                        ctx.lineWidth = 3;
+                        ctx.stroke();
+                    }
+                    players.remote.invincibleTimer -= 0.016;
+                    if (players.remote.invincibleTimer < 0) players.remote.invincibleTimer = 0;
+                }
             }
             
             // Локальный игрок
@@ -569,30 +775,34 @@
             ctx.arc(players.local.x, players.local.y, players.local.radius, 0, Math.PI * 2);
             ctx.fillStyle = players.local.color;
             ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
             ctx.fillStyle = 'white';
             ctx.font = 'bold 12px Arial';
             ctx.shadowBlur = 0;
-            ctx.fillText(players.local.name, players.local.x - 25, players.local.y - 15);
+            ctx.fillText(players.local.name, players.local.x - 25, players.local.y - 18);
+            ctx.fillStyle = '#ff6a6a';
+            ctx.fillText(`❤️ ${players.local.hp}`, players.local.x - 20, players.local.y + 25);
             
-            ctx.beginPath();
-            ctx.arc(players.local.x, players.local.y, players.local.radius + 3, 0, Math.PI * 2);
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
+            // Эффект неуязвимости для локального игрока
+            if (players.local.invincibleTimer > 0) {
+                if (Math.floor(Date.now() / 100) % 2 === 0) {
+                    ctx.beginPath();
+                    ctx.arc(players.local.x, players.local.y, players.local.radius + 5, 0, Math.PI * 2);
+                    ctx.strokeStyle = '#ffaa66';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+                players.local.invincibleTimer -= 0.016;
+                if (players.local.invincibleTimer < 0) players.local.invincibleTimer = 0;
+            }
         }
         
         function sendChatMessage() {
             const text = chatInput.value.trim();
             if (!text) return;
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-                addChatMessage('❌ Нет подключения к серверу', 'system');
-                return;
-            }
-            sendToServer({
-                type: 'chat',
-                message: text,
-                sender: playerName
-            });
+            sendToServer({ type: 'chat', message: text, sender: playerName });
             addChatMessage(`${playerName}: ${text}`, 'sent');
             chatInput.value = '';
         }
@@ -603,7 +813,7 @@
             const nowSec = nowMs / 1000;
             let delta = Math.min(0.033, nowSec - lastTime);
             if (delta > 0) {
-                if (gameStarted) {
+                if (gameStarted && players.local.hp > 0) {
                     updatePlayerMovement(delta);
                 }
                 draw();
@@ -619,8 +829,12 @@
                 if (key === 'a') keys.a = true;
                 if (key === 's') keys.s = true;
                 if (key === 'd') keys.d = true;
-                if (['w','a','s','d'].includes(key)) e.preventDefault();
+                if (key === 'r' && !gameStarted && playerNumber === 1 && roomId) {
+                    startGame();
+                }
+                if (['w','a','s','d','r'].includes(key)) e.preventDefault();
             });
+            
             window.addEventListener('keyup', (e) => {
                 const key = e.key.toLowerCase();
                 if (key === 'w') keys.w = false;
@@ -639,7 +853,7 @@
         
         setupControls();
         gameLoop(performance.now());
-        addChatMessage('📡 WebSocket версия - гарантированно работает между любыми компьютерами!', 'system');
+        addChatMessage('🤝 Co-op режим! Опыт общий - убивайте монстров вместе!', 'system');
     </script>
 </body>
 </html>
